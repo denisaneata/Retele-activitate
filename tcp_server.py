@@ -3,151 +3,163 @@ import threading
 
 HOST = "127.0.0.1"
 PORT = 3333
-BUFFER = 1024
+BUFFER_SIZE = 1024
 
 
-class ProductStore:
+class State:
     def __init__(self):
-        self.products = {}
-        self.mutex = threading.Lock()
+        self.data = {}
+        self.lock = threading.Lock()
 
-    def add_product(self, key, value):
-        with self.mutex:
-            if key in self.products:
-                return "ERROR key already exists"
-            self.products[key] = value
-            return "OK record added"
+    def add(self, key, value):
+        with self.lock:
+            self.data[key] = value
+        return "OK record added"
 
-    def get_product(self, key):
-        with self.mutex:
-            if key not in self.products:
-                return "ERROR invalid key"
-            return f"DATA {self.products[key]}"
+    def get(self, key):
+        with self.lock:
+            if key in self.data:
+                return f"DATA {self.data[key]}"
+            return "ERROR invalid key"
 
-    def delete_product(self, key):
-        with self.mutex:
-            if key not in self.products:
-                return "ERROR invalid key"
-            del self.products[key]
-            return "OK value deleted"
+    def remove(self, key):
+        with self.lock:
+            if key in self.data:
+                del self.data[key]
+                return "OK value deleted"
+            return "ERROR invalid key"
 
-    def list_products(self):
-        with self.mutex:
-            if not self.products:
-                return "DATA empty"
-            pairs = [f"{k}={v}" for k, v in self.products.items()]
-            return "DATA|" + ",".join(pairs)
+    def list(self):
+        with self.lock:
+            if not self.data:
+                return "DATA|"
+            result = ",".join(f"{k}={v}" for k, v in self.data.items())
+            return f"DATA|{result}"
 
-    def count_products(self):
-        with self.mutex:
-            return f"DATA {len(self.products)}"
+    def count(self):
+        with self.lock:
+            return f"DATA {len(self.data)}"
 
-    def clear_all(self):
-        with self.mutex:
-            self.products.clear()
-            return "OK all data deleted"
+    def clear(self):
+        with self.lock:
+            self.data.clear()
+        return "all data deleted"
 
-    def update_product(self, key, value):
-        with self.mutex:
-            if key not in self.products:
-                return "ERROR invalid key"
-            self.products[key] = value
-            return "OK data updated"
+    def update(self, key, value):
+        with self.lock:
+            if key in self.data:
+                self.data[key] = value
+                return "Data updated"
+            return "ERROR invalid key"
 
-    def pop_product(self, key):
-        with self.mutex:
-            if key not in self.products:
-                return "ERROR invalid key"
-            value = self.products.pop(key)
-            return f"DATA {value}"
+    def pop(self, key):
+        with self.lock:
+            if key in self.data:
+                value = self.data.pop(key)
+                return f"DATA {value}"
+            return "ERROR invalid key"
 
 
-store = ProductStore()
+state = State()
 
 
-def execute_command(text):
-    parts = text.split()
+def process_command(command):
+    parts = command.split()
 
     if not parts:
         return "ERROR empty command"
 
-    command = parts[0].upper()
+    cmd = parts[0].lower()
 
     try:
 
-        if command == "ADD":
+        if cmd == "add":
+            if len(parts) < 3:
+                return "ERROR invalid command format"
             key = parts[1]
             value = " ".join(parts[2:])
-            return store.add_product(key, value)
+            return state.add(key, value)
 
-        elif command == "GET":
-            return store.get_product(parts[1])
+        elif cmd == "get":
+            if len(parts) != 2:
+                return "ERROR invalid command format"
+            return state.get(parts[1])
 
-        elif command == "REMOVE":
-            return store.delete_product(parts[1])
+        elif cmd == "remove":
+            if len(parts) != 2:
+                return "ERROR invalid command format"
+            return state.remove(parts[1])
 
-        elif command == "LIST":
-            return store.list_products()
+        elif cmd == "list":
+            return state.list()
 
-        elif command == "COUNT":
-            return store.count_products()
+        elif cmd == "count":
+            return state.count()
 
-        elif command == "CLEAR":
-            return store.clear_all()
+        elif cmd == "clear":
+            return state.clear()
 
-        elif command == "UPDATE":
+        elif cmd == "update":
+            if len(parts) < 3:
+                return "ERROR invalid command format"
             key = parts[1]
             value = " ".join(parts[2:])
-            return store.update_product(key, value)
+            return state.update(key, value)
 
-        elif command == "POP":
-            return store.pop_product(parts[1])
+        elif cmd == "pop":
+            if len(parts) != 2:
+                return "ERROR invalid command format"
+            return state.pop(parts[1])
 
-        elif command == "QUIT":
-            return "QUIT"
+        elif cmd == "quit":
+            return "Server closing connection"
 
         else:
             return "ERROR unknown command"
 
-    except IndexError:
-        return "ERROR invalid parameters"
+    except Exception as e:
+        return f"ERROR {str(e)}"
 
 
-def client_handler(sock):
-    with sock:
+def handle_client(client_socket):
+    with client_socket:
         while True:
-            data = sock.recv(BUFFER)
+            try:
+                data = client_socket.recv(BUFFER_SIZE)
+                if not data:
+                    break
 
-            if not data:
+                command = data.decode('utf-8').strip()
+
+                if command.lower() == "quit":
+                    response = "Server closing connection"
+                    response_data = f"{len(response)} {response}".encode('utf-8')
+                    client_socket.sendall(response_data)
+                    break
+
+                response = process_command(command)
+
+                response_data = f"{len(response)} {response}".encode('utf-8')
+                client_socket.sendall(response_data)
+
+            except Exception as e:
+                error = f"ERROR {str(e)}"
+                client_socket.sendall(f"{len(error)} {error}".encode('utf-8'))
                 break
 
-            request = data.decode().strip()
-            response = execute_command(request)
 
-            if response == "QUIT":
-                message = "Connection closed"
-                payload = f"{len(message)} {message}".encode()
-                sock.sendall(payload)
-                break
+def start_server():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((HOST, PORT))
+        server_socket.listen()
 
-            payload = f"{len(response)} {response}".encode()
-            sock.sendall(payload)
+        print(f"[SERVER] Listening on {HOST}:{PORT}")
 
-
-def start():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((HOST, PORT))
-    server.listen()
-
-    print(f"Server running on {HOST}, port:{PORT}")
-
-    while True:
-        client, addr = server.accept()
-        print("Client connected:", addr)
-
-        thread = threading.Thread(target=client_handler, args=(client,))
-        thread.start()
+        while True:
+            client_socket, addr = server_socket.accept()
+            print(f"[SERVER] Connection from {addr}")
+            threading.Thread(target=handle_client, args=(client_socket,)).start()
 
 
 if __name__ == "__main__":
-    start()
+    start_server()
